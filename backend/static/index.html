@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Simply Personal Assistant</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<style>
+  :root {
+    --bg: #0f1115; --panel: #181b22; --border: #262a33;
+    --text: #e7e9ee; --muted: #8b93a1; --accent: #6ea8fe;
+    --green: #4ade80; --red: #f87171; --yellow: #facc15;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 14px/1.5 -apple-system, system-ui, sans-serif;
+         background: var(--bg); color: var(--text); height: 100vh; display: flex; }
+  .col { display: flex; flex-direction: column; height: 100vh; }
+  .chat { flex: 1; border-right: 1px solid var(--border); }
+  .queue { width: 420px; background: var(--panel); }
+  header { padding: 12px 16px; border-bottom: 1px solid var(--border);
+           font-weight: 600; display: flex; justify-content: space-between; align-items: center; }
+  header .badge { font-size: 11px; color: var(--muted); font-weight: 400; }
+  .messages { flex: 1; overflow-y: auto; padding: 16px; }
+  .msg { margin-bottom: 14px; max-width: 80%; }
+  .msg.user { margin-left: auto; }
+  .msg .bubble { padding: 10px 14px; border-radius: 12px; white-space: pre-wrap; }
+  .msg.user .bubble { background: var(--accent); color: #0f1115; }
+  .msg.assistant .bubble { background: var(--panel); border: 1px solid var(--border); }
+  .composer { padding: 12px; border-top: 1px solid var(--border); display: flex; gap: 8px; }
+  .composer textarea { flex: 1; resize: none; min-height: 44px; padding: 10px;
+                       background: var(--panel); border: 1px solid var(--border);
+                       color: var(--text); border-radius: 8px; font: inherit; }
+  .composer button { padding: 0 16px; background: var(--accent); color: #0f1115;
+                     border: 0; border-radius: 8px; font-weight: 600; cursor: pointer; }
+  .composer button:disabled { opacity: 0.5; cursor: wait; }
+  .queue-list { overflow-y: auto; flex: 1; }
+  .qitem { padding: 12px 16px; border-bottom: 1px solid var(--border); }
+  .qitem .meta { font-size: 11px; color: var(--muted); margin-bottom: 4px; }
+  .qitem .summary { margin-bottom: 8px; }
+  .qitem pre { background: #0b0d12; padding: 8px; border-radius: 6px;
+               font-size: 11px; max-height: 120px; overflow: auto; margin: 0 0 8px 0; }
+  .qitem .actions { display: flex; gap: 8px; }
+  .qitem button { flex: 1; padding: 6px 10px; border: 1px solid var(--border);
+                  background: transparent; color: var(--text); border-radius: 6px;
+                  cursor: pointer; font: inherit; }
+  .qitem button.approve { border-color: var(--green); color: var(--green); }
+  .qitem button.reject { border-color: var(--red); color: var(--red); }
+  .empty { padding: 24px; color: var(--muted); text-align: center; }
+</style>
+</head>
+<body>
+  <div class="col chat">
+    <header>
+      <span>Simply</span>
+      <span class="badge" id="qb-status">checking QB...</span>
+    </header>
+    <div class="messages" id="messages">
+      <div class="msg assistant"><div class="bubble">Hola Ivan. ¿En qué puedo ayudarte hoy? — bookkeeping, tuition, families, anything.</div></div>
+    </div>
+    <div class="composer">
+      <textarea id="input" placeholder="Ask me anything..." rows="2"></textarea>
+      <button id="send">Send</button>
+    </div>
+  </div>
+  <div class="col queue">
+    <header>
+      <span>Approval queue</span>
+      <span class="badge" id="qcount">0 pending</span>
+    </header>
+    <div class="queue-list" id="queue"><div class="empty">Nothing pending.</div></div>
+  </div>
+
+<script>
+const messagesEl = document.getElementById('messages');
+const queueEl = document.getElementById('queue');
+const qcountEl = document.getElementById('qcount');
+const qbStatusEl = document.getElementById('qb-status');
+const inputEl = document.getElementById('input');
+const sendBtn = document.getElementById('send');
+let history = [];
+
+function addMessage(role, text) {
+  const div = document.createElement('div');
+  div.className = `msg ${role}`;
+  div.innerHTML = `<div class="bubble"></div>`;
+  div.querySelector('.bubble').textContent = text;
+  messagesEl.appendChild(div);
+  messagesEl.scrollTop = messagesEl.scrollHeight;
+}
+
+async function send() {
+  const text = inputEl.value.trim();
+  if (!text) return;
+  inputEl.value = '';
+  addMessage('user', text);
+  sendBtn.disabled = true;
+  try {
+    const r = await fetch('/chat', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({message: text, history})
+    });
+    const data = await r.json();
+    history = data.history;
+    addMessage('assistant', data.reply || '(no reply)');
+    loadQueue();
+  } catch (e) {
+    addMessage('assistant', 'Error: ' + e.message);
+  } finally {
+    sendBtn.disabled = false;
+    inputEl.focus();
+  }
+}
+
+async function loadQueue() {
+  const r = await fetch('/queue?status=pending');
+  const items = await r.json();
+  qcountEl.textContent = `${items.length} pending`;
+  if (!items.length) {
+    queueEl.innerHTML = '<div class="empty">Nothing pending.</div>';
+    return;
+  }
+  queueEl.innerHTML = items.map(it => `
+    <div class="qitem" data-id="${it.id}">
+      <div class="meta">${it.agent} · ${it.action_type} · #${it.id}</div>
+      <div class="summary">${escapeHtml(it.summary)}</div>
+      <pre>${escapeHtml(JSON.stringify(it.payload, null, 2))}</pre>
+      <div class="actions">
+        <button class="approve" onclick="decide(${it.id}, 'approve')">Approve</button>
+        <button class="reject" onclick="decide(${it.id}, 'reject')">Reject</button>
+      </div>
+    </div>`).join('');
+}
+
+async function decide(id, action) {
+  await fetch(`/queue/${id}/${action}`, {method: 'POST'});
+  loadQueue();
+}
+
+async function loadQbStatus() {
+  const r = await fetch('/qb/status');
+  const d = await r.json();
+  qbStatusEl.innerHTML = d.connected
+    ? 'QB connected'
+    : '<a href="/qb/connect" style="color:var(--accent)">Connect QuickBooks</a>';
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, c => ({
+    '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
+  }[c]));
+}
+
+sendBtn.addEventListener('click', send);
+inputEl.addEventListener('keydown', e => {
+  if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); send(); }
+});
+
+loadQueue();
+loadQbStatus();
+setInterval(loadQueue, 5000);
+</script>
+</body>
+</html>
