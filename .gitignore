@@ -4,9 +4,8 @@
 __pycache__/
 .venv/
 venv/
-data/*.db
-data/*.db-journal
-data/files/
+data/
+!data/.gitkeep
 .DS_Store
 .vscode/
 .idea/

@@ -9,37 +9,48 @@ DB_PATH = Path(os.getenv("DB_PATH", "../data/simply.db")).resolve()
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS families (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    collegeone_family_id TEXT UNIQUE,
     name TEXT NOT NULL,
     primary_contact TEXT,
     phone TEXT,
     email TEXT,
     whatsapp TEXT,
     notes TEXT,
-    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS students (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    collegeone_student_no TEXT UNIQUE,
     family_id INTEGER REFERENCES families(id),
     name TEXT NOT NULL,
     grade TEXT,
+    student_group TEXT,
+    teacher TEXT,
+    gender TEXT,
+    dob TEXT,
     enrollment_date TEXT,
     notes TEXT,
-    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS tuition_charges (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    family_id INTEGER REFERENCES families(id),
     student_id INTEGER REFERENCES students(id),
+    collegeone_invoice_id TEXT,
+    item_name TEXT NOT NULL,       -- "MENSUALIDAD 2025-2026", "Horario Extendido", etc.
+    item_price REAL NOT NULL,
     period TEXT NOT NULL,          -- "YYYY-MM"
-    amount REAL NOT NULL,
-    due_date TEXT,
+    amount_paid REAL DEFAULT 0,
+    invoice_status TEXT,           -- Paid|Past Due|Partially Paid|cancelled
     paid_at TEXT,
-    payment_method TEXT,
     qb_invoice_id TEXT,
     notes TEXT,
-    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(student_id, item_name, period)
 );
 
 CREATE TABLE IF NOT EXISTS transactions (
