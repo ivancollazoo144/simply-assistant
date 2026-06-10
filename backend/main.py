@@ -187,6 +187,18 @@ def matricula_run(item_id: str, deposit_account_id: str | None = None,
                            deposit_account_id, payment_method_id, include_review)
 
 
+@app.get("/admin/expenses", dependencies=[Depends(require_token)])
+def admin_expenses(days: int = 365, max_results: int = 1000):
+    """Raw expense (Purchase) transactions over the last `days`, for analysis.
+
+    Includes payee_name, memo, total, date, and per-line account info so the
+    caller can group/identify recurring vendors (memo holds the merchant when
+    EntityRef is blank on bank-feed entries).
+    """
+    return {"purchases": quickbooks.list_recent_transactions(days=days,
+                                                             max_results=max_results)}
+
+
 @app.get("/qb/disconnect")
 def qb_disconnect():
     """Public disconnect URL Intuit requires for app listing. Removes local tokens."""
