@@ -216,6 +216,57 @@ def execute(plan_entries: list[dict], item_id: str, txn_date: str | None,
     return results
 
 
+# ---- HTTP-friendly wrappers -------------------------------------------------
+
+def plan_json(csv_path: Path) -> dict:
+    """Dry-run plan as a JSON-serializable dict (for the /admin endpoint)."""
+    students = parse_csv(csv_path)
+    if not qb.is_connected():
+        return {"error": "quickbooks_not_connected"}
+    customers = qb.list_customers()
+    plan = build_plan(students, customers)
+    accounts = qb.list_accounts()
+    return {
+        "counts": {
+            "students": len(students),
+            "matched": len(plan["matched"]),
+            "needs_review": len(plan["needs_review"]),
+            "not_found": len(plan["not_found"]),
+            "qb_customers": len(customers),
+        },
+        "totals": {
+            "invoice_total_matched": round(sum(e["total"] for e in plan["matched"]), 2),
+            "payment_total_matched": round(sum(e["paid"] for e in plan["matched"]), 2),
+        },
+        "matched": plan["matched"],
+        "needs_review": plan["needs_review"],
+        "not_found": plan["not_found"],
+        "items": qb.list_items(),
+        "deposit_accounts": [a for a in accounts
+                             if a["type"] in ("Bank", "Other Current Asset")],
+    }
+
+
+def execute_json(csv_path: Path, item_id: str, txn_date: str | None,
+                 deposit_account_id: str | None, payment_method_id: str | None,
+                 include_review: bool = False, description: str = "Matrícula") -> dict:
+    """Run the invoices/payments and return a JSON-serializable summary."""
+    students = parse_csv(csv_path)
+    customers = qb.list_customers()
+    plan = build_plan(students, customers)
+    to_run = list(plan["matched"])
+    if include_review:
+        to_run += plan["needs_review"]
+    results = execute(to_run, item_id, txn_date, deposit_account_id,
+                      payment_method_id, description)
+    return {
+        "ran": len(results),
+        "ok": sum(1 for r in results if r["status"] == "ok"),
+        "errors": sum(1 for r in results if r["status"] == "error"),
+        "results": results,
+    }
+
+
 # ---- CLI --------------------------------------------------------------------
 
 def _print_plan(plan: dict) -> None:
