@@ -390,6 +390,33 @@ def get_invoice(invoice_id: str) -> dict | None:
     return data.get("Invoice")
 
 
+def create_customer(display_name: str, first_name: str = "", last_name: str = "",
+                    email: str = "", phone: str = "") -> dict:
+    """Create a new customer in QuickBooks Online.
+
+    Args:
+      display_name: unique name shown in QB (required by QBO).
+      first_name / last_name: optional parsed name fields.
+      email / phone: optional contact info.
+    """
+    body: dict = {"DisplayName": display_name}
+    if first_name or last_name:
+        body["GivenName"] = first_name
+        body["FamilyName"] = last_name
+    if email:
+        body["PrimaryEmailAddr"] = {"Address": email}
+    if phone:
+        body["PrimaryPhone"] = {"FreeFormNumber": phone}
+    data = _request("POST", "/customer", json=body)
+    c = data.get("Customer") or {}
+    return {
+        "id": c.get("Id"),
+        "name": c.get("DisplayName"),
+        "email": (c.get("PrimaryEmailAddr") or {}).get("Address"),
+        "phone": (c.get("PrimaryPhone") or {}).get("FreeFormNumber"),
+    }
+
+
 def create_invoice(customer_id: str, item_id: str, amount: float,
                    txn_date: str | None = None, description: str = "",
                    doc_number: str | None = None) -> dict:

@@ -227,6 +227,13 @@ def admin_expenses(days: int = 365, max_results: int = 1000):
                                                              max_results=max_results)}
 
 
+@app.post("/admin/qb/customer", dependencies=[Depends(require_token)])
+def admin_create_customer(display_name: str, first_name: str = "",
+                          last_name: str = "", email: str = "", phone: str = ""):
+    """Create a new QB customer by name."""
+    return quickbooks.create_customer(display_name, first_name, last_name, email, phone)
+
+
 @app.get("/qb/disconnect")
 def qb_disconnect():
     """Public disconnect URL Intuit requires for app listing. Removes local tokens."""
