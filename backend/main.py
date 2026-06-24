@@ -259,6 +259,30 @@ def matricula_run_sheets(item_id: str, deposit_account_id: str | None = None,
     }
 
 
+@app.post("/admin/matricula/apply-one", dependencies=[Depends(require_token)])
+def matricula_apply_one(customer_id: str, customer_name: str,
+                        paid: float, total: float,
+                        item_id: str = "15",
+                        deposit_account_id: str = "61",
+                        date: str | None = None,
+                        description: str = "Matrícula 2026-2027"):
+    """Apply invoice + payment for a single student by QB customer ID.
+
+    Idempotent — checks the run log before creating anything.
+    """
+    import matricula_payments as mp
+    entry = {
+        "customer_id": customer_id,
+        "customer_name": customer_name,
+        "name": customer_name,
+        "paid": paid,
+        "total": total,
+        "remaining": round(total - paid, 2),
+    }
+    results = mp.execute([entry], item_id, date, deposit_account_id, None, description)
+    return results[0]
+
+
 @app.post("/admin/matricula/plan-balance", dependencies=[Depends(require_token)])
 async def matricula_plan_balance(request: Request):
     """Upload a CollegeOne Items Balance Report CSV and get the dry-run plan.
