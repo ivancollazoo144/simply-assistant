@@ -187,6 +187,78 @@ def matricula_run(item_id: str, deposit_account_id: str | None = None,
                            deposit_account_id, payment_method_id, include_review)
 
 
+@app.post("/admin/matricula/plan-sheets", dependencies=[Depends(require_token)])
+async def matricula_plan_sheets(request: Request):
+    """Upload the Google Sheets matricula tracker CSV and get the dry-run plan."""
+    body = await request.body()
+    dest = Path("/app/data/matriculas_sheets.csv")
+    dest.write_bytes(body)
+    import matricula_payments as mp
+    if not quickbooks.is_connected():
+        return {"error": "quickbooks_not_connected"}
+    students = mp.parse_sheets_csv(dest)
+    customers = quickbooks.list_customers()
+    plan = mp.build_plan(students, customers)
+    log = mp._load_log()
+    for lst in (plan["matched"], plan["needs_review"]):
+        for e in lst:
+            prior = log.get(e["customer_id"], {})
+            e["log_invoice_id"] = prior.get("invoice_id")
+            e["log_payment_id"] = prior.get("payment_id")
+            e["action"] = (
+                "skip (payment already recorded)" if prior.get("payment_id")
+                else f"apply payment ${e['paid']:.2f}" if prior.get("invoice_id")
+                else f"create invoice ${e['total']:.2f} + apply payment ${e['paid']:.2f}"
+            )
+    accounts = quickbooks.list_accounts()
+    return {
+        "counts": {
+            "students": len(students),
+            "matched": len(plan["matched"]),
+            "needs_review": len(plan["needs_review"]),
+            "not_found": len(plan["not_found"]),
+        },
+        "totals": {
+            "payments_to_apply": round(
+                sum(e["paid"] for e in plan["matched"] if not e.get("log_payment_id")), 2),
+            "already_recorded": round(
+                sum(e["paid"] for e in plan["matched"] if e.get("log_payment_id")), 2),
+        },
+        "matched": plan["matched"],
+        "needs_review": plan["needs_review"],
+        "not_found": plan["not_found"],
+        "items": quickbooks.list_items(),
+        "deposit_accounts": [a for a in accounts
+                             if a["type"] in ("Bank", "Other Current Asset")],
+    }
+
+
+@app.post("/admin/matricula/run-sheets", dependencies=[Depends(require_token)])
+def matricula_run_sheets(item_id: str, deposit_account_id: str | None = None,
+                         payment_method_id: str | None = None, date: str | None = None,
+                         include_review: bool = False):
+    """Apply QB invoices + payments from the Google Sheets matricula CSV.
+
+    Idempotent — students already in the run log are skipped.
+    """
+    import matricula_payments as mp
+    students = mp.parse_sheets_csv(Path("/app/data/matriculas_sheets.csv"))
+    customers = quickbooks.list_customers()
+    plan = mp.build_plan(students, customers)
+    to_run = list(plan["matched"])
+    if include_review:
+        to_run += plan["needs_review"]
+    results = mp.execute(to_run, item_id, date, deposit_account_id,
+                         payment_method_id, "Matrícula 2026-2027")
+    return {
+        "ran": len(results),
+        "ok": sum(1 for r in results if r["status"] == "ok"),
+        "errors": sum(1 for r in results if r["status"] == "error"),
+        "not_found_in_qb": [e["name"] for e in plan["not_found"]],
+        "results": results,
+    }
+
+
 @app.post("/admin/matricula/plan-balance", dependencies=[Depends(require_token)])
 async def matricula_plan_balance(request: Request):
     """Upload a CollegeOne Items Balance Report CSV and get the dry-run plan.

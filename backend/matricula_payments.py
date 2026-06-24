@@ -78,6 +78,40 @@ def parse_csv(path: Path) -> list[dict]:
     return students
 
 
+def parse_sheets_csv(path: Path) -> list[dict]:
+    """Parse the Google Sheets matricula tracker CSV (v2 format).
+
+    Column layout:
+        0: row#  1: name  2: grupo  3: costo  4: deposito
+        5: abono1  6: abono2  7: abono3  8: saldo_restante
+
+    Returns [{name, paid, remaining, total}] for rows with paid > 0 and cost > 0.
+    paid = deposito + abono1 + abono2 + abono3.
+    """
+    students: list[dict] = []
+    with path.open(newline="", encoding="utf-8") as f:
+        for row in csv.reader(f):
+            if len(row) < 9:
+                continue
+            name = row[1].strip()
+            if not name or name in ("Nombre del Estudiante", "A", "B"):
+                continue
+            cost = _money(row[3])
+            if cost <= 0:
+                continue
+            paid = round(sum(_money(row[i]) for i in range(4, 8)), 2)
+            remaining = _money(row[8])
+            if paid <= 0:
+                continue
+            students.append({
+                "name": name,
+                "paid": paid,
+                "remaining": remaining,
+                "total": cost,
+            })
+    return students
+
+
 def parse_items_balance_csv(path: Path) -> tuple[list[dict], list[dict], list[dict]]:
     """Parse a CollegeOne Items Balance Report CSV.
 
