@@ -187,6 +187,34 @@ def matricula_run(item_id: str, deposit_account_id: str | None = None,
                            deposit_account_id, payment_method_id, include_review)
 
 
+@app.post("/admin/matricula/plan-balance", dependencies=[Depends(require_token)])
+async def matricula_plan_balance(request: Request):
+    """Upload a CollegeOne Items Balance Report CSV and get the dry-run plan.
+
+    Shows which 'Paid' students will have payments applied, which are already
+    recorded, and which couldn't be matched in QB.
+    """
+    body = await request.body()
+    dest = Path("/app/data/matriculas_balance.csv")
+    dest.write_bytes(body)
+    import matricula_payments as mp
+    return mp.plan_items_balance_json(dest)
+
+
+@app.post("/admin/matricula/run-balance", dependencies=[Depends(require_token)])
+def matricula_run_balance(item_id: str, deposit_account_id: str | None = None,
+                          payment_method_id: str | None = None, date: str | None = None,
+                          include_review: bool = False):
+    """Apply QB payments for 'Paid' students in the previously uploaded balance CSV.
+
+    Idempotent — students already in the run log are skipped.
+    """
+    import matricula_payments as mp
+    return mp.execute_items_balance_json(
+        Path("/app/data/matriculas_balance.csv"), item_id, date,
+        deposit_account_id, payment_method_id, include_review)
+
+
 @app.get("/admin/expenses", dependencies=[Depends(require_token)])
 def admin_expenses(days: int = 365, max_results: int = 1000):
     """Raw expense (Purchase) transactions over the last `days`, for analysis.

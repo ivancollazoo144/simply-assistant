@@ -46,7 +46,7 @@ FUZZY_MIN = 0.82
 def _money(raw: str) -> float:
     """'$1,430' -> 1430.0 ; '$0' -> 0.0 ; '' -> 0.0"""
     s = (raw or "").replace("$", "").replace(",", "").strip()
-    if not s:
+    if not s or s == "-":
         return 0.0
     try:
         return float(s)
@@ -76,6 +76,72 @@ def parse_csv(path: Path) -> list[dict]:
                 "total": total,
             })
     return students
+
+
+def parse_items_balance_csv(path: Path) -> tuple[list[dict], list[dict], list[dict]]:
+    """Parse a CollegeOne Items Balance Report CSV.
+
+    Returns (paid_list, partial_list, past_due_list) where each element is:
+        {name, paid, remaining, total, status, collegeone_invoice_id}
+
+    - paid: Invoice Status == "Paid"  →  paid = item_price, remaining = 0
+    - partial: "Partially Paid"       →  paid = 0 (exact unknown; needs manual review)
+    - past_due: "Past Due"            →  paid = 0, remaining = item_price
+    Cancelled rows and duplicates (keep first non-cancelled) are dropped.
+    """
+    paid_list: list[dict] = []
+    partial_list: list[dict] = []
+    past_due_list: list[dict] = []
+    seen: set[str] = {}  # type: ignore[assignment]  # name_key → status
+    seen = {}
+
+    in_data = False
+    with path.open(newline="", encoding="utf-8") as f:
+        for row in csv.reader(f):
+            if not row:
+                continue
+            if row[0].strip() == "Student No.":
+                in_data = True
+                continue
+            if not in_data:
+                continue
+            if len(row) < 9:
+                continue
+            cell0 = row[0].strip()
+            if not cell0 or cell0 in ("Payments Received", "Pending Payments"):
+                continue
+
+            raw_name = row[2].strip().rstrip("*").strip()
+            item_price = _money(row[6])
+            status = row[7].strip().lower()
+
+            if not raw_name or item_price <= 0:
+                continue
+            if status == "cancelled":
+                continue
+
+            name_key = _norm(raw_name)
+            if name_key in seen:
+                continue
+            seen[name_key] = status
+
+            entry = {
+                "name": raw_name,
+                "total": item_price,
+                "collegeone_invoice_id": row[1].strip(),
+                "status": status,
+            }
+            if status == "paid":
+                entry.update({"paid": item_price, "remaining": 0.0})
+                paid_list.append(entry)
+            elif status == "partially paid":
+                entry.update({"paid": 0.0, "remaining": item_price})
+                partial_list.append(entry)
+            else:
+                entry.update({"paid": 0.0, "remaining": item_price})
+                past_due_list.append(entry)
+
+    return paid_list, partial_list, past_due_list
 
 
 # ---- name matching ----------------------------------------------------------
@@ -263,6 +329,102 @@ def execute_json(csv_path: Path, item_id: str, txn_date: str | None,
         "ran": len(results),
         "ok": sum(1 for r in results if r["status"] == "ok"),
         "errors": sum(1 for r in results if r["status"] == "error"),
+        "results": results,
+    }
+
+
+# ---- Items Balance Report wrappers ------------------------------------------
+
+def plan_items_balance_json(csv_path: Path) -> dict:
+    """Dry-run plan for a CollegeOne Items Balance Report CSV.
+
+    - matched: "Paid" students matched to QB customers (payment will be applied)
+    - needs_review: "Partially Paid" students — exact amount unknown, manual action needed
+    - not_found: "Paid" students with no QB customer match
+    - past_due: "Past Due" students (no payment to apply)
+    """
+    if not qb.is_connected():
+        return {"error": "quickbooks_not_connected"}
+    paid_list, partial_list, past_due_list = parse_items_balance_csv(csv_path)
+    customers = qb.list_customers()
+    log = _load_log()
+
+    # Match paid students to QB customers
+    plan = build_plan(paid_list, customers)
+
+    # Annotate each entry with run-log status so the caller knows what's already done
+    def _annotate(entries: list[dict]) -> list[dict]:
+        for e in entries:
+            cid = e.get("customer_id")
+            prior = log.get(cid, {}) if cid else {}
+            e["log_invoice_id"] = prior.get("invoice_id")
+            e["log_payment_id"] = prior.get("payment_id")
+            e["action"] = (
+                "skip (payment already recorded)" if prior.get("payment_id")
+                else "apply payment $650" if prior.get("invoice_id")
+                else "create invoice + apply payment $650"
+            )
+        return entries
+
+    _annotate(plan["matched"])
+    _annotate(plan["needs_review"])
+
+    # Match partially-paid and past-due for display only
+    partial_plan = build_plan(partial_list, customers)
+    past_due_plan = build_plan(past_due_list, customers)
+
+    accounts = qb.list_accounts()
+    return {
+        "counts": {
+            "paid_in_collegeone": len(paid_list),
+            "partially_paid": len(partial_list),
+            "past_due": len(past_due_list),
+            "matched_to_qb": len(plan["matched"]),
+            "needs_review": len(plan["needs_review"]),
+            "not_found_in_qb": len(plan["not_found"]),
+        },
+        "totals": {
+            "payments_to_apply": round(
+                sum(e["total"] for e in plan["matched"]
+                    if not e.get("log_payment_id")), 2),
+            "already_recorded": round(
+                sum(e["total"] for e in plan["matched"]
+                    if e.get("log_payment_id")), 2),
+        },
+        "matched": plan["matched"],
+        "needs_review": plan["needs_review"] + partial_plan["matched"] + partial_plan["needs_review"],
+        "not_found": plan["not_found"],
+        "past_due": past_due_plan["matched"] + past_due_plan["needs_review"] + past_due_plan["not_found"],
+        "items": qb.list_items(),
+        "deposit_accounts": [a for a in accounts
+                             if a["type"] in ("Bank", "Other Current Asset")],
+    }
+
+
+def execute_items_balance_json(csv_path: Path, item_id: str, txn_date: str | None,
+                               deposit_account_id: str | None,
+                               payment_method_id: str | None,
+                               include_review: bool = False,
+                               description: str = "Matrícula 2026-2027") -> dict:
+    """Apply payments for 'Paid' students in a CollegeOne Items Balance Report.
+
+    Creates a QB invoice if the student has no existing one (run-log check),
+    then applies a $650 payment. Already-recorded payments are skipped.
+    """
+    paid_list, partial_list, _ = parse_items_balance_csv(csv_path)
+    customers = qb.list_customers()
+    plan = build_plan(paid_list, customers)
+    to_run = list(plan["matched"])
+    if include_review:
+        partial_plan = build_plan(partial_list, customers)
+        to_run += partial_plan["matched"] + partial_plan["needs_review"]
+    results = execute(to_run, item_id, txn_date, deposit_account_id,
+                      payment_method_id, description)
+    return {
+        "ran": len(results),
+        "ok": sum(1 for r in results if r["status"] == "ok"),
+        "errors": sum(1 for r in results if r["status"] == "error"),
+        "not_found_in_qb": [e["name"] for e in plan["not_found"]],
         "results": results,
     }
 
