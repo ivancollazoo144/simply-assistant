@@ -417,6 +417,19 @@ def create_customer(display_name: str, first_name: str = "", last_name: str = ""
     }
 
 
+def deactivate_customer(customer_id: str) -> dict:
+    """Make a QB customer inactive (soft-delete). Fetches current SyncToken first."""
+    data = _request("GET", f"/customer/{customer_id}")
+    c = data.get("Customer") or {}
+    sync_token = c.get("SyncToken", "0")
+    result = _request("POST", "/customer",
+                      params={"operation": "update"},
+                      json={"Id": customer_id, "SyncToken": sync_token, "Active": False})
+    updated = result.get("Customer") or {}
+    return {"id": updated.get("Id"), "name": updated.get("DisplayName"),
+            "active": updated.get("Active", False)}
+
+
 def create_invoice(customer_id: str, item_id: str, amount: float,
                    txn_date: str | None = None, description: str = "",
                    doc_number: str | None = None) -> dict:

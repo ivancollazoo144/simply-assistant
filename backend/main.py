@@ -234,6 +234,12 @@ def admin_create_customer(display_name: str, first_name: str = "",
     return quickbooks.create_customer(display_name, first_name, last_name, email, phone)
 
 
+@app.delete("/admin/qb/customer/{customer_id}", dependencies=[Depends(require_token)])
+def admin_deactivate_customer(customer_id: str):
+    """Make a QB customer inactive (reversible soft-delete)."""
+    return quickbooks.deactivate_customer(customer_id)
+
+
 @app.get("/qb/disconnect")
 def qb_disconnect():
     """Public disconnect URL Intuit requires for app listing. Removes local tokens."""
