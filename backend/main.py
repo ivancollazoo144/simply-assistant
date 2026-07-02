@@ -135,6 +135,15 @@ def qb_connect():
     return RedirectResponse(quickbooks.get_auth_url())
 
 
+@app.get("/qb/connect-browser")
+def qb_connect_browser(t: str):
+    """Browser-friendly QB connect — accepts token as query param ?t=<token>."""
+    import secrets
+    if not secrets.compare_digest(t, API_TOKEN):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    return RedirectResponse(quickbooks.get_auth_url())
+
+
 @app.get("/qb/callback")
 def qb_callback(code: str, realmId: str):
     # NO auth — Intuit's servers hit this with no Bearer header
@@ -281,6 +290,41 @@ def matricula_apply_one(customer_id: str, customer_name: str,
     }
     results = mp.execute([entry], item_id, date, deposit_account_id, None, description)
     return results[0]
+
+
+@app.post("/admin/matricula/set-overdue", dependencies=[Depends(require_token)])
+def matricula_set_overdue(due_date: str = "2026-07-01"):
+    """Set DueDate on every matricula invoice in the run log to mark them overdue.
+
+    Reads data/matricula_run.json, updates each invoice's DueDate in QBO.
+    Only updates invoices that still have a balance > 0.
+    Returns per-invoice result.
+    """
+    import matricula_payments as mp
+    log = mp._load_log()
+    results = []
+    for customer_id, entry in log.items():
+        inv_id = entry.get("invoice_id")
+        if not inv_id:
+            continue
+        try:
+            updated = quickbooks.update_invoice_due_date(inv_id, due_date)
+            results.append({
+                "status": "ok",
+                "customer_name": entry.get("name", customer_id),
+                "invoice_id": inv_id,
+                "due_date": updated.get("due_date"),
+                "balance": updated.get("balance"),
+            })
+        except Exception as exc:
+            results.append({
+                "status": "error",
+                "customer_name": entry.get("name", customer_id),
+                "invoice_id": inv_id,
+                "error": str(exc)[:200],
+            })
+    ok = sum(1 for r in results if r["status"] == "ok")
+    return {"updated": ok, "errors": len(results) - ok, "results": results}
 
 
 @app.post("/admin/matricula/plan-balance", dependencies=[Depends(require_token)])

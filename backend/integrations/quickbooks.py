@@ -390,6 +390,27 @@ def get_invoice(invoice_id: str) -> dict | None:
     return data.get("Invoice")
 
 
+def update_invoice_due_date(invoice_id: str, due_date: str) -> dict:
+    """Set the DueDate on an existing invoice (sparse update).
+
+    due_date: YYYY-MM-DD string.
+    """
+    raw = _request("GET", f"/invoice/{invoice_id}")
+    inv = raw.get("Invoice") or {}
+    sync_token = inv.get("SyncToken", "0")
+    result = _request("POST", "/invoice",
+                      params={"operation": "update"},
+                      json={"Id": invoice_id, "SyncToken": sync_token,
+                            "DueDate": due_date, "sparse": True})
+    updated = result.get("Invoice") or {}
+    return {
+        "id": updated.get("Id"),
+        "due_date": updated.get("DueDate"),
+        "balance": updated.get("Balance"),
+        "customer_name": (updated.get("CustomerRef") or {}).get("name"),
+    }
+
+
 def create_customer(display_name: str, first_name: str = "", last_name: str = "",
                     email: str = "", phone: str = "") -> dict:
     """Create a new customer in QuickBooks Online.

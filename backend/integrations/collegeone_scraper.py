@@ -41,13 +41,30 @@ REPORTS = [
 ]
 
 
+def _dismiss_other_session_modal(page: Page) -> None:
+    """Dismiss the 'logged in on another device' modal if it appears."""
+    try:
+        modal = page.locator("#otherLoginSess")
+        if modal.is_visible(timeout=2000):
+            ok_btn = modal.locator('button:has-text("OK")')
+            if ok_btn.is_visible(timeout=1000):
+                ok_btn.click()
+                page.wait_for_timeout(800)
+    except Exception:
+        pass
+
+
 def _login_if_needed(page: Page) -> None:
     if "/signin" not in page.url:
+        _dismiss_other_session_modal(page)
         return
     print("  → logging in...")
+    _dismiss_other_session_modal(page)
     page.fill("#mobile_email", USERNAME, timeout=10000)
     page.fill("#password", PASSWORD)
     page.locator('button:has-text("Login")').first.click()
+    # After submitting, the "other session" modal may appear before redirect
+    _dismiss_other_session_modal(page)
     page.wait_for_function(
         "() => !location.pathname.includes('signin')", timeout=20000
     )
@@ -159,14 +176,25 @@ def scrape_all(headed: bool = False) -> dict:
 
 def refresh_and_import() -> dict:
     """Scrape + run CSV importers. Used by scheduled job and /collegeone/refresh."""
-    from importers import import_families, import_items_balance
+    from importers import (
+        import_debtors_report,
+        import_families,
+        import_payments_received,
+        link_payments_by_name,
+    )
 
     paths = scrape_all(headed=False)
     stats = {"downloaded": list(paths.keys())}
 
     if "families_report" in paths:
         stats["families"] = import_families(paths["families_report"])
-    # Note: Debtors + Payments importers will be added in a follow-up task.
+    if "debtors_report" in paths:
+        stats["debtors"] = import_debtors_report(paths["debtors_report"])
+    if "payments_received_report" in paths:
+        stats["payments"] = import_payments_received(paths["payments_received_report"])
+        # Backfill family/student links by name match — handles the CollegeOne
+        # student-no mismatch (their payment CSV uses different IDs than ours).
+        stats["payment_links"] = link_payments_by_name()
     return stats
 
 
