@@ -95,7 +95,9 @@ CREATE TABLE IF NOT EXISTS payments_received (
     payout_id TEXT,
     payout_date TEXT,
     section TEXT,                   -- 'Regular Invoices' or other
-    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    qb_synced_at TEXT,              -- ISO timestamp when synced to QB
+    qb_payment_id TEXT              -- QB Payment Id after sync
 );
 
 CREATE TABLE IF NOT EXISTS debt_snapshots (
@@ -159,14 +161,22 @@ def init_db() -> None:
 
 def _migrate(conn) -> None:
     """Add columns to existing tables (CREATE TABLE IF NOT EXISTS won't)."""
-    existing = {r[1] for r in conn.execute("PRAGMA table_info(debt_snapshots)").fetchall()}
+    ds_cols = {r[1] for r in conn.execute("PRAGMA table_info(debt_snapshots)").fetchall()}
     for col, ddl in [
         ("invoice_subtotal", "REAL"),
         ("invoice_payments_applied", "REAL"),
         ("invoice_balance_due", "REAL"),
     ]:
-        if col not in existing:
+        if col not in ds_cols:
             conn.execute(f"ALTER TABLE debt_snapshots ADD COLUMN {col} {ddl}")
+
+    pr_cols = {r[1] for r in conn.execute("PRAGMA table_info(payments_received)").fetchall()}
+    for col, ddl in [
+        ("qb_synced_at", "TEXT"),
+        ("qb_payment_id", "TEXT"),
+    ]:
+        if col not in pr_cols:
+            conn.execute(f"ALTER TABLE payments_received ADD COLUMN {col} {ddl}")
 
 
 @contextmanager
