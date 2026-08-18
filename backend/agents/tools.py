@@ -7,7 +7,7 @@ from typing import Any
 
 import approvals
 from db import connect
-from integrations import quickbooks
+from integrations import google_workspace as gw, quickbooks
 
 # Spanish grade order (Kinder → Duodecimo). Used for grade-based sorting.
 GRADE_ORDER = [
@@ -95,9 +95,242 @@ TOOLS = [
         },
     },
     {
+        "name": "list_current_debtors",
+        "description": (
+            "Return who currently owes money per CollegeOne's official Debtors Detailed Report "
+            "(latest scrape). Use this for 'who owes money right now' / 'quién debe ahora'. "
+            "More authoritative than list_overdue_tuition because it reflects the live CollegeOne state, "
+            "not the last items-balance CSV import."
+        ),
+        "input_schema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
+        "name": "recent_payments",
+        "description": (
+            "List payments received from CollegeOne. Filter by date range and/or method (Cash, "
+            "Bank Account, Check, Credit Card). Use for 'what came in this week / month' / 'cuánto "
+            "hemos cobrado en efectivo'."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "since": {"type": "string", "description": "YYYY-MM-DD inclusive lower bound."},
+                "until": {"type": "string", "description": "YYYY-MM-DD inclusive upper bound."},
+                "method": {"type": "string", "description": "Cash | Bank Account | Check | Credit Card"},
+            },
+            "required": [],
+        },
+    },
+    {
         "name": "qb_status",
         "description": "Check whether QuickBooks is connected and ready.",
         "input_schema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
+        "name": "qb_balance_summary",
+        "description": (
+            "QuickBooks BOOK BALANCE summary: sum of QB ledger transactions per "
+            "account type — NOT the live bank balance. When reporting to Ivan, "
+            "label it explicitly as 'saldo en libros (QB)' or 'book balance'. "
+            "If he asks 'cuánto tengo en el banco' / 'what's in the bank', "
+            "always clarify: 'En QB tienes X — este es el saldo en libros, no "
+            "el saldo real del banco. Para el real, mira tu app del banco.' "
+            "Returns: bank_total, accounts_receivable, accounts_payable, "
+            "credit_cards, and per-type breakdown — all from the QB ledger."
+        ),
+        "input_schema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
+        "name": "qb_list_accounts",
+        "description": (
+            "List QuickBooks chart of accounts (id, name, type, current balance). "
+            "Use to look up account names before proposing categorizations."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "active_only": {"type": "boolean", "default": True},
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "qb_recent_transactions",
+        "description": (
+            "Recent QuickBooks purchases/expenses (last N days). Returns date, "
+            "amount, payee, account categorization, memo. Use for 'what did I "
+            "spend on X' / 'show me last week's expenses'."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "days": {"type": "integer", "default": 30},
+                "max_results": {"type": "integer", "default": 100},
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "qb_open_invoices",
+        "description": (
+            "Outstanding invoices in QuickBooks (Balance > 0). Returns customer, "
+            "total, balance, due date. Use for 'what invoices are still open in QB' "
+            "(separate from CollegeOne debtors — these are anything QB tracks)."
+        ),
+        "input_schema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
+        "name": "qb_bookkeeper_run",
+        "description": (
+            "Apply payee categorization rules: scan recent QB transactions in "
+            "generic/wrong accounts and queue qb.categorize_txn approvals ONLY "
+            "for payees that have an existing rule. Does NOT guess. Payees "
+            "with no rule are ignored — use `qb_list_unruled_payees` to see "
+            "them and `qb_set_payee_rule` to teach the system. Use when Ivan "
+            "says 'aplica las reglas' or 'corre el bookkeeper'."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "default": 30},
+                "since": {"type": "string", "description": "YYYY-MM-DD lower bound"},
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "qb_list_unruled_payees",
+        "description": (
+            "Show payees that appear in recent generic-categorized QB "
+            "transactions but don't have a categorization rule yet. Sorted by "
+            "frequency. Use to identify the highest-leverage payees Ivan "
+            "should set rules for next. Returns payee, txn_count, "
+            "total_amount, currently_in account."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "default": 200},
+                "since": {"type": "string", "description": "YYYY-MM-DD lower bound"},
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "qb_list_payee_rules",
+        "description": "Show all currently-defined payee categorization rules.",
+        "input_schema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
+        "name": "qb_set_payee_rule",
+        "description": (
+            "Set a categorization rule for a payee. mode='always' auto-queues "
+            "qb.categorize_txn → the chosen account (Ivan still approves each "
+            "individually). mode='ask' queues with no account; Ivan picks per "
+            "transaction at approval time. mode='skip' ignores this payee "
+            "entirely. For 'always' you must supply qb_account_id and "
+            "qb_account_name — look these up via qb_list_accounts first."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "payee": {"type": "string"},
+                "mode": {"type": "string", "enum": ["always", "ask", "skip"]},
+                "qb_account_id": {"type": "string"},
+                "qb_account_name": {"type": "string"},
+            },
+            "required": ["payee", "mode"],
+        },
+    },
+    {
+        "name": "qb_delete_payee_rule",
+        "description": "Remove a payee rule so the payee goes back to being ignored.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"payee": {"type": "string"}},
+            "required": ["payee"],
+        },
+    },
+    {
+        "name": "qb_profit_and_loss",
+        "description": (
+            "P&L report from QuickBooks. Returns income, expenses, net income for "
+            "the date range. Defaults to year-to-date if no dates. Use for 'how "
+            "much did we make this month' / 'P&L de este semestre'."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "start": {"type": "string", "description": "YYYY-MM-DD inclusive"},
+                "end": {"type": "string", "description": "YYYY-MM-DD inclusive"},
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "schedule_event",
+        "description": (
+            "Create a Google Calendar event IMMEDIATELY in Ivan's admi.simplicity@gmail.com "
+            "calendar (no approval queue — runs right away, syncs to iPhone via Google "
+            "Calendar app). Use for meetings, parent calls, school events, deadlines. Times "
+            "must be ISO 8601 in his local Puerto Rico time (no timezone suffix needed). "
+            "After this runs you can truthfully tell Ivan the event was created and include "
+            "the link from the response."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "title": {"type": "string"},
+                "start": {"type": "string", "description": "ISO 8601, e.g. '2026-05-30T14:30'"},
+                "duration_minutes": {"type": "integer", "default": 60},
+                "notes": {"type": "string"},
+                "location": {"type": "string"},
+                "calendar_id": {"type": "string", "description": "Calendar ID. Defaults to 'primary'."},
+            },
+            "required": ["title", "start"],
+        },
+    },
+    {
+        "name": "create_reminder",
+        "description": (
+            "Create a Google Tasks item IMMEDIATELY (no approval queue — runs right away). "
+            "Appears in Gmail/Calendar sidebar and the Google Tasks app on iPhone. Use for "
+            "follow-ups, to-dos, tasks with due dates (calling parents, filing paperwork, "
+            "etc.). Google Tasks only honors the date portion of 'due', not the time. "
+            "After this runs you can truthfully tell Ivan the task was created."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "title": {"type": "string"},
+                "due": {"type": "string", "description": "Optional ISO 8601 due date (e.g. '2026-05-30')."},
+                "notes": {"type": "string"},
+                "tasklist_id": {"type": "string", "description": "Defaults to '@default'."},
+            },
+            "required": ["title"],
+        },
+    },
+    {
+        "name": "draft_email",
+        "description": (
+            "Compose an email DRAFT in Gmail (admi.simplicity@gmail.com) for Ivan's approval. "
+            "The draft is created in Gmail but NEVER auto-sent — Ivan reviews and clicks Send "
+            "himself. After approval the bot returns a link to open the draft directly. Use "
+            "for messages to parents, vendors, payment confirmations, etc. Body should be "
+            "plain text (no HTML). Be polite and professional, default to Spanish unless "
+            "context says otherwise."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "to": {"type": "string", "description": "Recipient email."},
+                "subject": {"type": "string"},
+                "body": {"type": "string", "description": "Plain-text email body."},
+                "cc": {"type": "string"},
+                "bcc": {"type": "string"},
+            },
+            "required": ["to", "subject", "body"],
+        },
     },
     {
         "name": "propose_action",
@@ -139,8 +372,75 @@ def dispatch(name: str, args: dict) -> Any:
         return _payment_summary(args.get("period"), args.get("semester"), args.get("year"))
     if name == "family_balance":
         return _family_balance(args["family_id"])
+    if name == "list_current_debtors":
+        return _list_current_debtors()
+    if name == "recent_payments":
+        return _recent_payments(args.get("since"), args.get("until"), args.get("method"))
     if name == "qb_status":
-        return {"connected": quickbooks.is_connected()}
+        return {"connected": quickbooks.is_connected(),
+                "environment": quickbooks._env()}
+    if name == "qb_balance_summary":
+        return quickbooks.balance_summary()
+    if name == "qb_list_accounts":
+        return quickbooks.list_accounts(active_only=args.get("active_only", True))
+    if name == "qb_recent_transactions":
+        return quickbooks.list_recent_transactions(
+            days=args.get("days", 30),
+            max_results=args.get("max_results", 100),
+        )
+    if name == "qb_open_invoices":
+        return quickbooks.list_open_invoices()
+    if name == "qb_profit_and_loss":
+        return quickbooks.profit_and_loss(start=args.get("start"), end=args.get("end"))
+    if name == "qb_bookkeeper_run":
+        import bookkeeper
+        return bookkeeper.propose_categorizations(
+            limit=args.get("limit", 30), since=args.get("since"),
+        )
+    if name == "qb_list_unruled_payees":
+        import bookkeeper
+        return bookkeeper.list_unruled_payees(
+            limit=args.get("limit", 200), since=args.get("since"),
+        )
+    if name == "qb_list_payee_rules":
+        import bookkeeper
+        return {"rules": bookkeeper.list_rules()}
+    if name == "qb_set_payee_rule":
+        import bookkeeper
+        return bookkeeper.set_rule(
+            payee=args["payee"], mode=args["mode"],
+            qb_account_id=args.get("qb_account_id"),
+            qb_account_name=args.get("qb_account_name", ""),
+        )
+    if name == "qb_delete_payee_rule":
+        import bookkeeper
+        return {"deleted": bookkeeper.delete_rule(args["payee"])}
+    if name == "schedule_event":
+        # Auto-execute — calendar events are reversible (just delete in Calendar)
+        return gw.add_event(
+            title=args["title"],
+            start=args["start"],
+            duration_minutes=args.get("duration_minutes", 60),
+            notes=args.get("notes", ""),
+            calendar_id=args.get("calendar_id", gw.DEFAULT_CALENDAR_ID),
+            location=args.get("location", ""),
+        )
+    if name == "create_reminder":
+        # Auto-execute — tasks are reversible (just check off / delete)
+        return gw.add_task(
+            title=args["title"],
+            due=args.get("due"),
+            notes=args.get("notes", ""),
+            tasklist_id=args.get("tasklist_id", gw.DEFAULT_TASKLIST_ID),
+        )
+    if name == "draft_email":
+        qid = approvals.enqueue(
+            agent="messaging",
+            action_type="email.draft",
+            summary=f"Email draft to {args['to']}: {args['subject']}",
+            payload=args,
+        )
+        return {"queued": True, "queue_id": qid, "status": "pending_approval"}
     if name == "propose_action":
         qid = approvals.enqueue(
             agent=args["agent"],
@@ -326,6 +626,95 @@ def _payment_summary(period: str | None, semester: str | None, year: int | None)
         }
         return {"scope": {"period": period, "semester": semester, "year": year},
                 "by_item": by_item, "totals": totals}
+
+
+def _list_current_debtors() -> dict:
+    """From debt_snapshots — uses the most recent snapshot only.
+
+    total_owed = sum of invoice_balance_due across DISTINCT invoices (the real
+    outstanding balance, after subtracting partial payments).
+    """
+    with connect() as conn:
+        latest = conn.execute(
+            "SELECT MAX(snapshot_date) AS d FROM debt_snapshots"
+        ).fetchone()["d"]
+        if not latest:
+            return {"error": "no debt snapshots yet — run the CollegeOne scraper first"}
+        rows = conn.execute(
+            "SELECT d.invoice_id, d.item_name, d.item_amount, d.tax, "
+            "d.invoice_date, d.due_date, d.overdue_days, d.school_year, "
+            "d.invoice_subtotal, d.invoice_payments_applied, d.invoice_balance_due, "
+            "s.id AS student_id, s.name AS student_name, s.grade, "
+            "f.id AS family_id, f.name AS family_name, f.phone, f.whatsapp "
+            "FROM debt_snapshots d "
+            "LEFT JOIN students s ON s.id = d.student_id "
+            "LEFT JOIN families f ON f.id = d.family_id "
+            "WHERE d.snapshot_date = ? "
+            "ORDER BY f.name, d.due_date",
+            (latest,),
+        ).fetchall()
+        items = [dict(r) for r in rows]
+
+        # Sum balance_due per DISTINCT invoice (denormalized across items)
+        invoice_balances: dict[str, float] = {}
+        for r in items:
+            if r["invoice_balance_due"] is not None:
+                invoice_balances[r["invoice_id"]] = r["invoice_balance_due"]
+        total_owed = round(sum(invoice_balances.values()), 2)
+
+        return {
+            "snapshot_date": latest,
+            "item_count": len(items),
+            "invoice_count": len(invoice_balances),
+            "family_count": len({r["family_id"] for r in items if r["family_id"]}),
+            "total_owed": total_owed,
+            "total_billed_gross": round(sum(r["item_amount"] for r in items), 2),
+            "items": items,
+        }
+
+
+def _recent_payments(since: str | None, until: str | None, method: str | None) -> dict:
+    with connect() as conn:
+        sql = (
+            "SELECT p.collegeone_payment_id, p.payment_date, p.customer_name, "
+            "p.payment_method, p.amount, p.status, p.invoice_id, p.section, "
+            "f.id AS family_id, f.name AS family_name, "
+            "s.id AS student_id, s.name AS student_name, s.grade "
+            "FROM payments_received p "
+            "LEFT JOIN families f ON f.id = p.family_id "
+            "LEFT JOIN students s ON s.id = p.student_id "
+            "WHERE 1=1"
+        )
+        params: list = []
+        if since:
+            sql += " AND p.payment_date >= ?"
+            params.append(since)
+        if until:
+            sql += " AND p.payment_date <= ?"
+            params.append(until)
+        if method:
+            sql += " AND p.payment_method = ?"
+            params.append(method)
+        sql += " ORDER BY p.payment_date DESC, p.collegeone_payment_id DESC"
+        rows = conn.execute(sql, params).fetchall()
+        items = [dict(r) for r in rows]
+
+        by_method: dict[str, dict] = {}
+        for r in items:
+            m = r["payment_method"] or "(unknown)"
+            slot = by_method.setdefault(m, {"count": 0, "total": 0.0})
+            slot["count"] += 1
+            slot["total"] += r["amount"]
+        for slot in by_method.values():
+            slot["total"] = round(slot["total"], 2)
+
+        return {
+            "filters": {"since": since, "until": until, "method": method},
+            "count": len(items),
+            "total": round(sum(r["amount"] for r in items), 2),
+            "by_method": by_method,
+            "payments": items,
+        }
 
 
 def _family_balance(family_id: int) -> dict:

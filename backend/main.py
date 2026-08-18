@@ -380,6 +380,21 @@ def admin_deactivate_customer(customer_id: str):
     return quickbooks.deactivate_customer(customer_id)
 
 
+@app.get("/qb/tokens/export", dependencies=[Depends(require_token)])
+def qb_tokens_export():
+    """Return current QB tokens so a local dev machine can sync them.
+
+    Only available to authenticated callers — the token is as sensitive as
+    the QB credentials themselves.
+    """
+    import json
+    from pathlib import Path
+    path = Path(quickbooks.TOKENS_PATH)
+    if not path.exists():
+        return {"error": "no_tokens"}
+    return json.loads(path.read_text())
+
+
 @app.get("/qb/disconnect")
 def qb_disconnect():
     """Public disconnect URL Intuit requires for app listing. Removes local tokens."""
@@ -426,6 +441,31 @@ def collegeone_parse(req: PasteRequest):
         payload=parsed,
     )
     return {"queued": True, "queue_id": qid, "preview": parsed}
+
+
+@app.post("/admin/payment-sync", dependencies=[Depends(require_token)])
+def payment_sync(dry_run: bool = False):
+    """Sync all unsynced CollegeOne payments → QuickBooks.
+
+    Matches each payment to a QB customer + invoice, applies payment, marks synced.
+    Ambiguous cases go to approval_queue for manual review.
+    """
+    import payment_sync as ps
+    return ps.sync_all(dry_run=dry_run)
+
+
+@app.post("/admin/payment-sync/daily", dependencies=[Depends(require_token)])
+def payment_sync_daily(dry_run: bool = False):
+    """Scrape CollegeOne + import + sync all pending payments to QB."""
+    import payment_sync as ps
+    return ps.daily_cycle(dry_run=dry_run)
+
+
+@app.get("/admin/payment-sync/pending", dependencies=[Depends(require_token)])
+def payment_sync_pending():
+    """List payments not yet synced to QB."""
+    import payment_sync as ps
+    return {"pending": ps._pending_payments()}
 
 
 @app.get("/health")

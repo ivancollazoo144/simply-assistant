@@ -1,0 +1,30 @@
+services:
+  simply-assistant:
+    build: .
+    image: simply-assistant:latest
+    container_name: simply-assistant
+    restart: unless-stopped
+    networks:
+      - n8n_default
+    volumes:
+      # Persistent data (db, tokens, browser profile, etc.) lives on the host
+      - ./data:/app/data
+      # Encrypted backups land here, host directory persists them
+      - ./backups:/app/backups
+      # .env mounted read-only so secrets stay outside the image
+      - ./.env:/app/.env:ro
+    environment:
+      - PYTHONPATH=/app/backend
+      - BACKUP_DIR=/app/backups
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=n8n_default"
+      - "traefik.http.routers.simply.rule=Host(`assistant.simplicity-lc.com`)"
+      - "traefik.http.routers.simply.entrypoints=web,websecure"
+      - "traefik.http.routers.simply.tls=true"
+      - "traefik.http.routers.simply.tls.certresolver=mytlschallenge"
+      - "traefik.http.services.simply.loadbalancer.server.port=8765"
+
+networks:
+  n8n_default:
+    external: true

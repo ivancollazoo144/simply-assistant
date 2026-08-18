@@ -390,6 +390,29 @@ def get_invoice(invoice_id: str) -> dict | None:
     return data.get("Invoice")
 
 
+def list_payment_methods() -> list[dict]:
+    rows = _query("SELECT * FROM PaymentMethod WHERE Active = true MAXRESULTS 100")
+    return [{"id": m["Id"], "name": m.get("Name"), "type": m.get("Type")} for m in rows]
+
+
+def list_invoices_for_customer(customer_id: str, open_only: bool = True) -> list[dict]:
+    """Return invoices for one customer. If open_only, only those with Balance > 0."""
+    where = f"WHERE CustomerRef = '{customer_id}'"
+    if open_only:
+        where += " AND Balance > '0'"
+    rows = _query(f"SELECT * FROM Invoice {where} ORDER BY TxnDate DESC MAXRESULTS 100")
+    return [{
+        "id": i["Id"],
+        "doc_number": i.get("DocNumber"),
+        "customer_id": (i.get("CustomerRef") or {}).get("value"),
+        "customer_name": (i.get("CustomerRef") or {}).get("name"),
+        "txn_date": i.get("TxnDate"),
+        "due_date": i.get("DueDate"),
+        "total": float(i.get("TotalAmt", 0)),
+        "balance": float(i.get("Balance", 0)),
+    } for i in rows]
+
+
 def update_invoice_due_date(invoice_id: str, due_date: str) -> dict:
     """Set the DueDate on an existing invoice (sparse update).
 
