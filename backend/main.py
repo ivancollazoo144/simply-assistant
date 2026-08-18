@@ -395,6 +395,21 @@ def qb_tokens_export():
     return json.loads(path.read_text())
 
 
+@app.post("/qb/tokens/import", dependencies=[Depends(require_token)])
+async def qb_tokens_import(req: Request):
+    """Overwrite QB tokens from a JSON body. Used to sync a refreshed token back to VPS."""
+    import json
+    from pathlib import Path
+    data = await req.json()
+    required = {"access_token", "refresh_token", "realm_id", "environment", "expires_at"}
+    if not required.issubset(data.keys()):
+        raise HTTPException(status_code=400, detail=f"Missing fields: {required - data.keys()}")
+    path = Path(quickbooks.TOKENS_PATH)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, indent=2))
+    return {"ok": True, "realm_id": data["realm_id"], "environment": data["environment"]}
+
+
 @app.get("/qb/disconnect")
 def qb_disconnect():
     """Public disconnect URL Intuit requires for app listing. Removes local tokens."""
