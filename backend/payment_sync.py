@@ -128,17 +128,25 @@ def _find_qb_invoice(co_invoice_id: str, amount: float,
         if doc and doc == co_num:
             return inv
 
-    # 2. Only one open invoice → apply there
+    # 2. Only one open invoice → apply there unconditionally.
+    # Payment may exceed invoice balance when CollegeOne adds a convenience fee
+    # (2.5% CC, 0.5% bank). QB applies up to the invoice balance and keeps the
+    # rest as unapplied credit — correct behavior.
     if len(qb_invoices) == 1:
-        if qb_invoices[0]["balance"] >= amount - 0.01:
-            return qb_invoices[0]
+        return qb_invoices[0]
 
     # 3. Invoices where balance exactly equals payment amount
     exact_balance = [i for i in qb_invoices if abs(i["balance"] - amount) < 0.02]
     if len(exact_balance) == 1:
         return exact_balance[0]
 
-    # 4. Invoices where balance >= payment (partial payment)
+    # 4. Invoices whose balance is within 3% above the payment (fee-adjusted match)
+    fee_match = [i for i in qb_invoices if i["balance"] <= amount * 1.03 + 0.50
+                 and i["balance"] >= amount * 0.97 - 0.50]
+    if len(fee_match) == 1:
+        return fee_match[0]
+
+    # 5. Invoices where balance >= payment (partial payment)
     sufficient = [i for i in qb_invoices if i["balance"] >= amount - 0.01]
     if len(sufficient) == 1:
         return sufficient[0]
